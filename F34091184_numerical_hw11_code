@@ -1,0 +1,119 @@
+import numpy as np
+from scipy.integrate import solve_ivp, quad
+from scipy.linalg import solve
+import pandas as pd
+import matplotlib.pyplot as plt
+
+a, b = 0, 1
+alpha, beta = 1, 2
+h = 0.1
+n = int((b - a) / h)
+x_vals = np.linspace(a, b, n + 1)
+
+# === (a) Shooting Method ===
+def ode_rhs(x, Y):
+    y, dy = Y
+    d2y = -(x + 1) * dy + 2 * y + (1 - x**2) * np.exp(-x)
+    return [dy, d2y]
+
+def shoot(s):
+    sol = solve_ivp(ode_rhs, [a, b], [alpha, s], t_eval=x_vals)
+    return sol.y[0, -1]
+
+s0, s1 = 0.0, 1.0
+y0, y1 = shoot(s0) - beta, shoot(s1) - beta
+for _ in range(100):
+    s2 = s1 - y1 * (s1 - s0) / (y1 - y0)
+    y2 = shoot(s2) - beta
+    if abs(y2) < 1e-6:
+        break
+    s0, y0 = s1, y1
+    s1, y1 = s2, y2
+
+sol = solve_ivp(ode_rhs, [a, b], [alpha, s2], t_eval=x_vals)
+y_shoot = sol.y[0]
+
+# === (b) Finite Difference Method ===
+A_fd = np.zeros((n - 1, n - 1))
+F_fd = np.zeros(n - 1)
+
+for i in range(1, n):
+    xi = x_vals[i]
+    pi = -(xi + 1)
+    qi = 2
+    ri = (1 - xi**2) * np.exp(-xi)
+
+    ai = -(1 + 0.5 * h * pi)
+    bi = 2 + h ** 2 * qi
+    ci = -(1 - 0.5 * h * pi)
+
+    if i > 1:
+        A_fd[i - 1, i - 2] = ai
+    A_fd[i - 1, i - 1] = bi
+    if i < n - 1:
+        A_fd[i - 1, i] = ci
+
+    F_fd[i - 1] = -h ** 2 * ri
+
+F_fd[0] -= ai * alpha
+F_fd[-1] -= ci * beta
+y_fd_inner = solve(A_fd, F_fd)
+y_fd = np.concatenate(([alpha], y_fd_inner, [beta]))
+
+# === (c) Variational Method ===
+def f_func(x):
+    return (1 - x**2) * np.exp(-x)
+
+def y1_func(x):
+    return alpha * (1 - x) + beta * x
+
+def phi_hat(i, x, x_nodes):
+    if i == 0 or i == len(x_nodes) - 1:
+        return 0
+    xi = x_nodes[i]
+    xi_minus = x_nodes[i - 1]
+    xi_plus = x_nodes[i + 1]
+    if xi_minus <= x < xi:
+        return (x - xi_minus) / (xi - xi_minus)
+    elif xi <= x <= xi_plus:
+        return (xi_plus - x) / (xi_plus - xi)
+    else:
+        return 0
+
+def phi_hat_prime(i, x, x_nodes):
+    if i == 0 or i == len(x_nodes) - 1:
+        return 0
+    xi = x_nodes[i]
+    xi_minus = x_nodes[i - 1]
+    xi_plus = x_nodes[i + 1]
+    if xi_minus <= x < xi:
+        return 1 / (xi - xi_minus)
+    elif xi <= x <= xi_plus:
+        return -1 / (xi_plus - xi)
+    else:
+        return 0
+
+x_nodes = np.linspace(a, b, n + 2)
+A_hat = np.zeros((n, n))
+b_hat = np.zeros(n)
+
+for i in range(1, n + 1):
+    for j in range(1, n + 1):
+        A_hat[i - 1, j - 1] = quad(lambda x: phi_hat_prime(i, x, x_nodes) * phi_hat_prime(j, x, x_nodes) +
+                                             (x + 1) * phi_hat(i, x, x_nodes) * phi_hat_prime(j, x, x_nodes) -
+                                             2 * phi_hat(i, x, x_nodes) * phi_hat(j, x, x_nodes), a, b)[0]
+    b_hat[i - 1] = quad(lambda x: f_func(x) * phi_hat(i, x, x_nodes), a, b)[0]
+    b_hat[i - 1] -= quad(lambda x: -2 * y1_func(x) * phi_hat(i, x, x_nodes), a, b)[0]
+
+c_hat = solve(A_hat, b_hat)
+
+x_plot = x_vals
+y_var = np.array([y1_func(x) + sum(c_hat[i] * phi_hat(i + 1, x, x_nodes) for i in range(n)) for x in x_plot])
+
+df = pd.DataFrame({
+    "x": x_vals,
+    " (a) Shooting Method ": y_shoot,
+    " (b) Finite Difference ": y_fd,
+    " (c) Variational Method ": y_var
+})
+print(df.to_string(index=False))
